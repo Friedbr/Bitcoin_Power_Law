@@ -1,151 +1,94 @@
-import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
+import streamlit as st
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Imposta il titolo dell'applicazione
+st.title("Bitcoin Price Analysis with Power Law Projection")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Numero di anni per la proiezione
+projection_length_in_years = 5
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Numero di giorni per la proiezione
+projection_length_in_days = 365 * projection_length_in_years
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# Scarica i dati di prezzo del Bitcoin
+url = 'https://data.bitcoinity.org/export_data.csv?c=e&currency=USD&data_type=price&r=day&t=l&timespan=all'
+bitcoin_data = pd.read_csv(url, parse_dates=['Time'])
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# Prezzi iniziali dalla colonna 10 (indice 9), quindi passa alla colonna 4 (indice 3) alla riga 560
+initial_prices = bitcoin_data.iloc[:560, 9]
+subsequent_prices = bitcoin_data.iloc[560:, 3]
+prices = pd.concat([initial_prices, subsequent_prices])
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+# Assicurati che la datetime sia timezone-naive
+bitcoin_data['Time'] = bitcoin_data['Time'].dt.tz_localize(None)
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+# Combina i tempi e i prezzi in un unico DataFrame
+combined_data = pd.DataFrame({
+    'Time': bitcoin_data['Time'],
+    'Price': prices
+})
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# Rimuovi le righe con valori NaN nella colonna 'Price'
+combined_data = combined_data.dropna(subset=['Price'])
 
-    return gdp_df
+# Calcola i giorni dal Genesis Block (2009-01-03)
+genesis_block = pd.Timestamp('2009-01-03')
+combined_data['Days From Genesis'] = (combined_data['Time'] - genesis_block).dt.days
 
-gdp_df = get_gdp_data()
+# Esegui la trasformazione log-log
+log_days = np.log10(combined_data['Days From Genesis'])
+log_price = np.log10(combined_data['Price'])
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+# Esegui la regressione lineare sui dati log-log
+slope, intercept, r_value, p_value, std_err = linregress(log_days, log_price)
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+# Genera la linea di adattamento della legge di potenza
+# Inizia prendendo il giorno di partenza e seleziona il giorno di arresto
+start = combined_data['Days From Genesis'].min()
+stop = combined_data['Days From Genesis'].max() + projection_length_in_days
+x_fit = np.linspace(start, stop, (stop - start))
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+# Calcola i valori di y
+y_fit = 10 ** (slope * np.log10(x_fit) + intercept)
 
-# Add some spacing
-''
-''
+# Creazione dei grafici con Matplotlib e visualizzazione in Streamlit
+fig, axes = plt.subplots(3, 1, figsize=(15, 10))
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+# Grafico in scala lineare
+axes[0].plot(combined_data['Days From Genesis'], combined_data['Price'], label='Data')
+axes[0].plot(x_fit, y_fit, 'r-', linewidth=2, label='Power Law Fit')
+axes[0].set_xlabel('Days From Genesis Block')
+axes[0].set_ylabel('Price (USD)')
+axes[0].set_title(f'Bitcoin Price - Linear Scale\nSlope: {slope:.2f}, Intercept: {intercept:.2f}, R^2: {r_value**2:.2f}')
+axes[0].legend()
+axes[0].grid(True)
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+# Grafico in scala logaritmica (asse y)
+axes[1].plot(combined_data['Days From Genesis'], combined_data['Price'], label='Data')
+axes[1].plot(x_fit, y_fit, 'r-', linewidth=2, label='Power Law Fit')
+axes[1].set_yscale('log')
+axes[1].set_xlabel('Days From Genesis Block')
+axes[1].set_ylabel('Price (USD)')
+axes[1].set_title(f'Bitcoin Price - Log-Linear Scale\nSlope: {slope:.2f}, Intercept: {intercept:.2f}, R^2: {r_value**2:.2f}')
+axes[1].legend()
+axes[1].grid(True)
 
-countries = gdp_df['Country Code'].unique()
+# Grafico in scala log-log
+axes[2].plot(combined_data['Days From Genesis'], combined_data['Price'], label='Data')
+axes[2].plot(x_fit, y_fit, 'r-', linewidth=2, label='Power Law Fit')
+axes[2].set_xscale('log')
+axes[2].set_yscale('log')
+axes[2].set_xlabel('Days From Genesis Block')
+axes[2].set_ylabel('Price (USD)')
+axes[2].set_title(f'Bitcoin Price - Log-Log Scale\nSlope: {slope:.2f}, Intercept: {intercept:.2f}, R^2: {r_value**2:.2f}')
+axes[2].legend()
+axes[2].grid(True)
 
-if not len(countries):
-    st.warning("Select at least one country")
+# Imposta il layout del grafico
+plt.tight_layout()
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+# Mostra il grafico in Streamlit
+st.pyplot(fig)
